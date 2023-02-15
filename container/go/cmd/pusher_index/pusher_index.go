@@ -17,12 +17,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -31,6 +31,9 @@ import (
 	"github.com/bazelbuild/rules_docker/container/go/pkg/compat"
 	"github.com/bazelbuild/rules_docker/container/go/pkg/oci"
 	"github.com/bazelbuild/rules_docker/container/go/pkg/utils"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/pkg/errors"
 )
 
 type applicationArgs struct {
@@ -39,6 +42,7 @@ type applicationArgs struct {
 	Name                string
 	Format              string
 	SkipUnchangedDigest bool
+	SkipExistingTag     bool
 	InsecureRepository  bool
 	Images              []utils.ImageIndexArgs
 }
@@ -68,6 +72,10 @@ func parseArgs(argv []string) (*applicationArgs, error) {
 	fl.BoolVar(
 		&args.SkipUnchangedDigest, "skip-unchanged-digest", false,
 		"(deprecated, this flag has none action)",
+	)
+	fl.BoolVar(
+		&args.SkipExistingTag, "skip-existing-tag", false,
+		"If set to true, will only push images if tag does not exist in repository.",
 	)
 	fl.BoolVar(
 		&args.InsecureRepository, "insecure-repository", false,
@@ -121,6 +129,22 @@ func main() {
 	}
 }
 
+func tagExists(dst string) (bool, error) {
+	imageTag, err := name.NewTag(dst)
+	if err != nil {
+		return false, errors.Wrapf(err, "couldn't create ref from image tag")
+	}
+	remoteImg, err := remote.Image(imageTag, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		if strings.Contains(err.Error(), string(transport.ManifestUnknownErrorCode)) {
+			// tag does not exist in repo
+			return false, nil
+		}
+		return false, errors.Wrapf(err, "unexpected error when checking for image tag")
+	}
+	return remoteImg != nil, nil
+}
+
 func run(ctx context.Context, appName string, args *applicationArgs) error {
 	if err := utils.InitializeDockerConfig(args.ClientConfigDir); err != nil {
 		return err
@@ -141,6 +165,17 @@ func run(ctx context.Context, appName string, args *applicationArgs) error {
 	ref, err := name.ParseReference(dst, opts...)
 	if err != nil {
 		return fmt.Errorf("error parsing %q as an image reference: %v", dst, err)
+	}
+
+	if args.SkipExistingTag {
+		exists, err := tagExists(dst)
+		if err != nil {
+			log.Printf("Error checking if tag already exists %v. Still pushing", err)
+		}
+		if exists {
+			log.Print("Skipping push of existing tag")
+			return nil
+		}
 	}
 
 	if len(args.Images) == 0 {

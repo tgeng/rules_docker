@@ -120,6 +120,8 @@ def _pusher_write_scripts_common(ctx, ii):
         args.append("-skip-unchanged-digest")
     if ii.insecure_repository:
         args.append("-insecure-repository")
+    if ctx.attr.skip_existing_tag:
+        args.append("-skip-existing-tag")
 
     return args, inputs, struct(
         registry = registry,
@@ -336,6 +338,13 @@ _container_push_common_attrs = dicts.add({
         doc = "Check if the container registry already contain the image's digest. If yes, skip the push for that image. " +
               "Default to False. " +
               "Note that there is no transactional guarantee between checking for digest existence and pushing the digest. " +
+              "This means that you should try to avoid running the same container_push targets in parallel.",
+    ),
+    "skip_existing_tag": attr.bool(
+        default = False,
+        doc = "Check if the container registry already contain an image of this tag. If true, skip the push for that image. " +
+              "Default to False. " +
+              "Note that there is no transactional guarantee between checking for tag existence and pushing the image. " +
               "This means that you should try to avoid running the same container_push targets in parallel.",
     ),
     "stamp": STAMP_ATTR,
