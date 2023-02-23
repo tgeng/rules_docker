@@ -264,9 +264,11 @@ def _parse_image_platform(raw_platform):
     return struct(os = os, arch = arch, variant = variant)
 
 def _container_push_index_impl(ctx):
+    # Get the images from transitions rather than having them explicitly specified so that cross
+    # building is handled by Bazel's platform and toolchain features automatically.
     images = {
-        _parse_image_platform(image_platform): _get_image_from_target(ctx, image_target)
-        for image_target, image_platform in ctx.attr.images.items()
+        _parse_image_platform("linux/" + arch): _get_image_from_target(ctx, ctx.split_attr.image[arch])
+        for arch in ctx.attr.architectures
     }
 
     exe = ctx.actions.declare_file(ctx.label.name + ctx.attr.extension)
@@ -415,16 +417,66 @@ Example of the `images` attribute value:
 - `<variant>` cannot be specified without `<os>` and `<arch>`.
 """
 
+# One-to-many transitions from container_push_index target to underlying images.
+def _container_push_transition_imp(settings, attr):
+    # Mapping from docker's arch naming to Bazel's arch naming.
+    arch_mapping = {
+        "amd64": "x86_64",
+        "arm64/v8": "aarch64",
+    }
+
+    if any([arch not in arch_mapping for arch in attr.architectures]):
+        fail("Invalid architectures specified in %s. Valid values are %s" % (
+            repr(attr.architectures),
+            repr(arch_mapping.keys()),
+        ))
+
+    current_platform = str(settings["//command_line_option:platforms"][0])
+
+    # remove os and arch suffix if it's present
+    if "__" in current_platform:
+        current_platform = current_platform[:current_platform.rindex("__")]
+    os = "linux"
+
+    result = {}
+    for arch in attr.architectures:
+        normalized_arch = arch_mapping.get(arch, arch)
+        transitioned_platform = "{}__{}-{}".format(current_platform, os, normalized_arch)
+        result[arch] = {
+            "//command_line_option:platforms": transitioned_platform,
+        }
+    return result
+
+_container_push_transition = transition(
+    implementation = _container_push_transition_imp,
+    inputs = [
+        "//command_line_option:platforms",
+    ],
+    outputs = [
+        "//command_line_option:platforms",
+    ],
+)
+
 container_push_index_ = rule(
     doc = _DOC_CONTAINER_PUSH_INDEX,
     attrs = dicts.add(_container_push_common_attrs, {
-        "images": attr.label_keyed_string_dict(
+        "image": attr.label(
             doc = """The list of all images to push.
 
             The value of each entries is the platform of the container image.
             """,
             allow_files = [".tar"],
             mandatory = True,
+            cfg = _container_push_transition,
+        ),
+        "architectures": attr.string_list(
+            doc = """The CPU architectures to include in this multi-arch docker image.
+
+            Allowed values are "amd64", "arm64/v8". Specifying ["amd64", "arm64/v8"] will
+            create a multi-arch image supporting both CPU architectures.
+            """,
+            default = ["amd64"],
+            allow_empty = False,
         ),
         "_digester_index": attr.label(
             default = "//container/go/cmd/digester_index",
@@ -436,6 +488,9 @@ container_push_index_ = rule(
             cfg = "exec",
             executable = True,
             allow_files = True,
+        ),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
     }),
     executable = True,

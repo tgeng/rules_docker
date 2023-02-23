@@ -174,8 +174,8 @@ def _image_config(
         null_entrypoint = False,
         null_cmd = False):
     """Create the configuration for a new container image."""
-    config = ctx.actions.declare_file(name + "." + layer_name + ".config")
-    manifest = ctx.actions.declare_file(name + "." + layer_name + ".manifest")
+    config = ctx.actions.declare_file(name + "." + architecture + "." + layer_name + ".config")
+    manifest = ctx.actions.declare_file(name + "." + architecture + "." + layer_name + ".manifest")
 
     label_file_dict = _string_to_label(
         ctx.files.label_files,
@@ -365,11 +365,11 @@ def _impl(
     output_digest = output_digest or ctx.outputs.digest
     output_config = output_config or ctx.outputs.config
     output_config_digest = output_config_digest or ctx.outputs.config_digest
-    output_layer = output_layer or ctx.outputs.layer
     build_script = ctx.outputs.build_script
     null_cmd = null_cmd or ctx.attr.null_cmd
     null_entrypoint = null_entrypoint or ctx.attr.null_entrypoint
     tag_name = tag_name or ctx.attr.tag_name
+    output_layer = ctx.actions.declare_file("{}-{}-layer.tar".format(name, architecture))
 
     # If this target specifies docker_run_flags, they are always used.
     # Fall back to the base image's run flags if present, otherwise use the default value.
@@ -407,6 +407,7 @@ def _impl(
         debs = debs,
         tars = tars,
         env = env,
+        architecture = architecture,
         operating_system = operating_system,
         output_layer = output_layer,
     )
@@ -777,14 +778,9 @@ _outputs["build_script"] = "%{name}.executable"
 def _image_transition_impl(settings, attr):
     if not settings["@io_bazel_rules_docker//transitions:enable"]:
         # Once bazel < 5.0 is not supported we can return an empty dict here
-        return {
-            "//command_line_option:platforms": settings["//command_line_option:platforms"],
-            "@io_bazel_rules_docker//platforms:image_transition_cpu": "//plaftorms:image_transition_cpu_unset",
-            "@io_bazel_rules_docker//platforms:image_transition_os": "//plaftorms:image_transition_os_unset",
-        }
+        return {}
 
     return {
-        "//command_line_option:platforms": "@io_bazel_rules_docker//platforms:image_transition",
         "@io_bazel_rules_docker//platforms:image_transition_cpu": "@platforms//cpu:" + {
             # Architecture aliases.
             "386": "x86_32",
@@ -798,10 +794,8 @@ _image_transition = transition(
     implementation = _image_transition_impl,
     inputs = [
         "@io_bazel_rules_docker//transitions:enable",
-        "//command_line_option:platforms",
     ],
     outputs = [
-        "//command_line_option:platforms",
         "@io_bazel_rules_docker//platforms:image_transition_cpu",
         "@io_bazel_rules_docker//platforms:image_transition_os",
     ],
@@ -815,13 +809,12 @@ image = struct(
 )
 
 container_image_ = rule(
-    attrs = image.attrs,
+    attrs = dicts.omit(image.attrs, ["_allowlist_function_transition"]),
     doc = "Called by the `container_image` macro with **kwargs, see below",
     executable = True,
-    outputs = image.outputs,
+    outputs = dicts.omit(image.outputs, ["layer"]),
     toolchains = ["@io_bazel_rules_docker//toolchains/docker:toolchain_type"],
     implementation = image.implementation,
-    cfg = image.cfg,
 )
 
 # This validates the two forms of value accepted by
@@ -1047,4 +1040,15 @@ def container_image(**kwargs):
         else:
             kwargs["entrypoint"] = _validate_command("entrypoint", kwargs["entrypoint"], operating_system)
 
+    if "architecture" in kwargs:
+        _warn("With Pinterest's fork of docker rules, `architecture` specifield manually will be ignored. It will be derived from the targeting platform instead.")
+
+    kwargs["architecture"] = select({
+        "@platforms//cpu:aarch64": "arm64",
+        "@platforms//cpu:x86_64": "amd64",
+    })
+
     container_image_(**kwargs)
+
+def _warn(msg):
+    print("{red}{msg}{nc}".format(red = "\033[0;31m", msg = msg, nc = "\033[0m"))

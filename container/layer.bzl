@@ -208,6 +208,7 @@ def _impl(
         env = None,
         compression = None,
         compression_options = None,
+        architecture = None,
         operating_system = None,
         output_layer = None):
     """Implementation for the container_layer rule.
@@ -237,11 +238,12 @@ def _impl(
     directory = directory or ctx.attr.directory
     symlinks = symlinks or ctx.attr.symlinks
     operating_system = operating_system or ctx.attr.operating_system
+    architecture = architecture or ctx.attr.architecture
     compression = ctx.attr.compression
     compression_options = ctx.attr.compression_options
     debs = debs or ctx.files.debs
     tars = tars or ctx.files.tars
-    output_layer = output_layer or ctx.outputs.layer
+    output_layer = ctx.actions.declare_file("{}-{}-layer.tar".format(name, architecture))
 
     # Generate the unzipped filesystem layer, and its sha256 (aka diff_id)
     unzipped_layer, diff_id = build_layer(
@@ -348,6 +350,7 @@ _layer_attrs = dicts.add({
         doc = "Set the mode of files added by the `files` attribute.",
     ),
     "mtime": attr.int(default = _DEFAULT_MTIME),
+    "architecture": attr.string(),
     "operating_system": attr.string(
         default = "linux",
         mandatory = False,
@@ -387,10 +390,13 @@ container_layer_ = rule(
     doc = _DOC,
     attrs = layer.attrs,
     executable = False,
-    outputs = layer.outputs,
     implementation = layer.implementation,
     toolchains = ["@io_bazel_rules_docker//toolchains/docker:toolchain_type"],
 )
 
 def container_layer(**kwargs):
+    kwargs["architecture"] = select({
+        "@platforms//cpu:arm64": "arm64",
+        "@platforms//cpu:x86_64": "amd64",
+    })
     container_layer_(**kwargs)
